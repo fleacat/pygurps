@@ -6,6 +6,49 @@ import random
 import unittest
 from collections import deque
 
+#arbitrary collection of attributes
+#javascript style object
+#cribbed from Ben Cherry http://www.adequatelygood.com/JavaScript-Style-Objects-in-Python.html
+class Thing(object):
+	DEFAULTS = {}
+	
+	def __init__(self, **kwargs):
+		self.parent = None
+		self.__dict__.update(self.DEFAULTS)
+		self.__dict__.update(kwargs)
+		for thing in kwargs.values():
+			if isinstance(thing, Thing):
+				thing.parent = self
+				
+	def __getitem__(self, name):
+		item = self.__dict__.get(name, None)
+		return item if item is not None else (self.parent.__getitem__(name) if self.parent else None)
+
+	def __setitem__(self, name, val):
+		return self.__dict__.__setitem__(name, val)
+
+	def __delitem__(self, name):
+		if self.__dict__.has_key(name):
+			del self.__dict__[name]
+
+	def __getattr__(self, name):
+		return self.__getitem__(name)
+
+	def __setattr__(self, name, val):
+		return self.__setitem__(name, val)
+
+	def __delattr__(self, name):
+		return self.__delitem__(name)
+
+	def __iter__(self):
+		return self.__dict__.__iter__()
+
+	def __repr__(self):
+		return self.__dict__.__repr__()
+
+	def __str__(self):
+		return self.__dict__.__str__()
+	
 
 
 test_rolls_q = deque()
@@ -97,17 +140,12 @@ BACK = 'back'
 LEFT_SIDE = 'left_side'
 RIGHT_SIDE = 'right_side'
 
-class Attack:
+class Attack(Thing):
 	DEFAULTS = {
 		'location':None,
 		'direction':FRONT }
 	
-	def __init__(self, **args):
-		for param in args:
-			setattr(self, param, args[param])
-		for param in self.DEFAULTS:
-			if not hasattr(self, param):
-				setattr(self, param, self.DEFAULTS[param])
+	
 				
 	
 
@@ -328,6 +366,7 @@ class Character:
 		self.modifiers = {}
 		self.damage = 0
 		self.position = STANDING
+		self.holding = {}
 
 	def pp(self):
 		print("ST: {0}".format(self.ST))
@@ -385,6 +424,92 @@ class Character:
 	def skill_level(self, skill_name):
 		return Skill.getLevel(skill_name, self)		
 					
+	def hold(self, item, appendage):
+		self.holding[appendage] = item
+		
+	def drop(self, appendage):
+		item = self.holding.get(appendage, None)
+		self.holding[appendage] = None
+		return item
+	
+	@property
+	def swingDice(self):
+		return 1 if self.ST < 9 else int((self.ST-5)/4) 
+	
+	@property
+	def swingMod(self):
+		if self.ST < 9:
+			return -5 + int((self.ST-1)/2)
+		else:
+			return ((self.ST-1) % 4) - 1
+		
+	@property
+	def thrustDice(self):
+		return 1 if self.ST < 19 else 2
+	
+	@property
+	def thrustMod(self):
+		return -1 if self.ST > 18 else int((self.ST-1)/2) - 6
+		
+SWING = 'swing'
+THRUST = 'thrust'
+THROW = 'throw'
+SHOOT = 'shoot'
+C = 'close'
+		
+
+	
+def roll_damage(attack):
+	damage = roll_dice(attack.damage_dice, attack.damage_mod)
+	if damage < 1: #minimum 
+		damage = 0 if attack.damage_type == CRUSHING else 1
+	attack.base_damage = damage
+	return attack
+
+		
+class Weapon:
+	def swing(dice_mod, damage_type):
+		def set_damage(attack):
+			attack.damage_dice = attack.attacker.swingDice
+			attack.damage_mod = attack.attacker.swingMod + dice_mod
+			attack.damage_type = damage_type
+			return attack
+		return set_damage
+
+	def thrust(dice_mod, damage_type):
+		def set_damage(attack):
+			attack.damage_dice = attack.attacker.thrustDice
+			attack.damage_mod = attack.attacker.thrustMod + dice_mod
+			attack.damage_type = damage_type
+			return attack
+		return set_damage
+
+	def fixed(dice, mod, damage_type):
+		def set_damage(attack):
+			attack.damage_dice = dice
+			attack.damage_mod = mod
+			attack.damage_type = damage_type
+			return attack
+		return set_damage
+	
+	def st_range(half, max):
+		def set_range(attack):
+			attack.half_range = int(attack.attacker.ST * half)
+			attack.max_range = int(attack.attacker.ST * max)
+			return attack
+		return set_range
+	
+	def fixed_range(half, max):
+		def set_range(attack):
+			attack.half_range = half
+			attack.max_range = max
+			return attack
+		return set_range
+	
+
+
+	
+	
 EASY = 'easy'
 AVERAGE = 'average'
 HARD = 'hard'
@@ -440,7 +565,7 @@ class RollTests(unittest.TestCase):
 			(15, 5, CRITICAL_SUCCESS), #5 on 15+ skill
 			(15, 6, SUCCESS), 
 			(16, 6, CRITICAL_SUCCESS), #6 on 16+ skill
-			(14, 17, CRITICAL_FAILURE), #lower than 16, 17 is crit fail
+			(15, 17, CRITICAL_FAILURE), #lower than 16, 17 is crit fail
 			(16, 17, FAILURE), #higher than 15 skill,17 is normal fail
 			(19, 17, FAILURE), #17 is always failure,
 			(19, 18, CRITICAL_FAILURE) ] #18 is always crit fail
@@ -453,11 +578,13 @@ class RollTests(unittest.TestCase):
 class SkillTests(unittest.TestCase):
 	def test_skill(self):
 		bob = Character(DX=11)
-		bob.add_skill('Broadsword', 1)
+		bob.add_skill('Broadsword', +1)
 		self.assertEqual(bob.skill_level('Broadsword'), 12)
 		self.assertEqual(bob.skill_level('Shortsword'), 10) #Broadsword-2		
 		self.assertEqual(bob.skill_level('Knife'), 8) #DX-3	
 		
+		
+	
 		
 class HitTests(unittest.TestCase):
 	def test_impaling(self):
@@ -541,9 +668,36 @@ class HitTests(unittest.TestCase):
 		attack = set_hit_effects(attack)
 		self.assertEqual(attack.effects, {DAMAGE:4, SHOCK:-4, KNOCKBACK:1})
 	
-
+class WeaponTests(unittest.TestCase):
+	def test_sword(self):
+		broadsword = Thing(skill='Broadsword',
+				           thrust=Thing(damage=Weapon.thrust(+1, IMPALING)),
+				           swing=Thing(damage=Weapon.swing(+1, CUTTING)),
+				           reach=[1,])
+		bob = Character(ST=11, DX=11)
+		bob.add_skill('Broadsword', +1)
+		attack = Attack(attacker=bob)
+		attack = broadsword.swing.damage(attack)
+		self.assertEqual(bob.swingDice, 1)
+		self.assertEqual(bob.swingMod, +1)
+		self.assertEqual(attack.damage_type, CUTTING)
+		self.assertEqual(attack.damage_dice, 1)
+		self.assertEqual(attack.damage_mod, +2)
+		
+	def test_knife(self):
+		knife = Thing(skill="Knife",
+					   thrust=Thing(damage=Weapon.thrust(0, IMPALING),
+									reach=[C,]),
+					   swing=Thing(damage=Weapon.swing(-2, CUTTING),
+								   reach=[C,1]),
+					   throw=Thing(skill='Knife Throwing',
+								   damage=Weapon.thrust(0, IMPALING),
+								   range=Weapon.st_range(0.8, 1.5))
+					  )
+		
 	
 class DamageTests(unittest.TestCase):
+	
 	def test_damage(self):
 		joe = Character(armor={TORSO:2})
 		attack = Attack(target=joe,
